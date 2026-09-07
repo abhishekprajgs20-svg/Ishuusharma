@@ -1,0 +1,779 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --accent: #3d4bfa;
+  --a4-width: 210mm;
+  --a4-height: 297mm;
+  --a4-pad: 14mm;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+  background: #f4f5f9;
+  color: #181a24;
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  /* Containment safety net: nothing in the builder UI should ever be able
+     to force horizontal page scroll on a phone (a too-wide table, an
+     unwrapped monospace input, a native <select> rendering wider than its
+     container, etc.) — this is the last line of defense so a single
+     overlooked element can't blow out the whole viewport. The A4/print
+     preview area intentionally scales itself down instead (see
+     .preview-scale-wrap) so this never clips real content, only guards
+     against accidental overflow in the surrounding chrome. */
+  overflow-x: hidden;
+  width: 100%;
+}
+
+/* ------------------------------------------------------------------ */
+/* MOBILE VIEWPORT + SAFE-AREA HELPERS                                  */
+/* Tailwind's h-screen (100vh) is measured against the browser's        */
+/* LARGEST possible viewport on mobile Safari/Chrome — taller than      */
+/* what's actually visible once the address bar / bottom toolbar is     */
+/* showing. That mismatch is exactly what pushed the bottom nav below   */
+/* the visible screen until the page was scrolled. `dvh` (dynamic       */
+/* viewport height) tracks the REAL current viewport and updates live   */
+/* as the browser chrome shows/hides; `vh` stays as a fallback for the   */
+/* handful of older mobile browsers that don't support dvh yet.         */
+/* ------------------------------------------------------------------ */
+.app-shell-h {
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* Safe-area padding for the fixed bottom nav on notched/gesture-bar
+   phones (iPhone home indicator, Android gesture nav) so its buttons are
+   never obscured by or crammed against the system UI. env() resolves to
+   0 on devices without a safe area, so this is a no-op elsewhere. */
+.mobile-safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.font-devanagari {
+  font-family: 'Noto Sans Devanagari', 'Inter', sans-serif;
+}
+
+/* ---------------------------------------------------------------- */
+/* Scrollbar polish (webapp chrome, not the paper)                   */
+/* ---------------------------------------------------------------- */
+.styled-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.styled-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.styled-scroll::-webkit-scrollbar-thumb {
+  background: #c3caff;
+  border-radius: 8px;
+}
+.styled-scroll::-webkit-scrollbar-thumb:hover {
+  background: #9fabff;
+}
+
+/* ---------------------------------------------------------------- */
+/* LIVE A4 PAGE SYSTEM                                                */
+/* The preview renders true-to-size A4 sheets on screen (96dpi css   */
+/* mm units) so pagination is WYSIWYG before print/export ever runs. */
+/* ---------------------------------------------------------------- */
+.a4-sheet {
+  width: var(--a4-width);
+  min-height: var(--a4-height);
+  background: white;
+  position: relative;
+  /* Deliberately NOT overflow:hidden + a fixed height here. A fixed
+     height + clipped overflow is exactly what turned a pagination
+     mis-measurement into an INVISIBLE cutoff (content silently missing,
+     no visual clue anything was wrong). With min-height + visible
+     overflow, the worst case if a page is ever mis-planned is a sheet
+     that renders slightly taller than one physical A4 page — clearly
+     visible and easy to spot/report, never silently missing content. */
+  overflow: visible;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.08), 0 20px 40px -12px rgba(16, 24, 40, 0.18);
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.a4-sheet-inner {
+  position: relative;
+  min-height: var(--a4-height);
+  padding: var(--a4-pad);
+  display: flex;
+  flex-direction: column;
+}
+
+.a4-content-area {
+  flex: 1;
+  overflow: visible;
+  position: relative;
+}
+
+.a4-watermark {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.a4-watermark img {
+  max-width: 60%;
+  max-height: 60%;
+  object-fit: contain;
+}
+
+/* Two REAL, separate column containers (not CSS multicol) — see the long
+   comment above the .a4-col rules below for exactly why. Each renders
+   ONLY the items lib/paginate.ts's JS packer already assigned to it, in
+   plain top-to-bottom block flow, so the browser never re-splits or
+   re-balances content across them on its own. */
+.a4-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: start;
+}
+
+.a4-one-col {
+  display: block;
+}
+
+/* The JS bin-packer (lib/paginate.ts) measures every fragment's height at
+   an exact column width and decides, once, which fragments go in column 1
+   vs column 2 of a given page. That decision is only correct if the FINAL
+   render places those fragments in two plain, independently-flowing
+   columns with no further re-layout.
+   This class used to be CSS multi-column (`columns: 2`) with a single
+   flat list of fragments handed to it, relying on the BROWSER's own
+   native column-balancing algorithm to do the actual splitting. That's a
+   second, independent pagination engine layered on top of the JS one, and
+   the two don't agree: native multicol balances for near-equal column
+   *height*, while the JS packer greedily fills column 1 before starting
+   column 2 — different algorithms can (and did) fit a different number
+   of fragments per column for the same content. On screen this was
+   invisible because .a4-sheet uses min-height/overflow:visible, so a
+   miscount just made the page silently render taller than 297mm with
+   everything still on it. In PRINT, .a4-sheet is a fixed 297mm with
+   overflow:hidden (needed so a real mismeasurement doesn't bleed into the
+   next physical page) — so the SAME miscount there doesn't grow the page,
+   it clips whatever the two engines disagreed about, permanently, with
+   no way for that content to reappear anywhere. That silent clipping is
+   exactly the "question cuts off, options and footer vanish" bug. Two
+   explicit column containers, each fed only its own already-decided
+   fragments, removes the second pagination engine entirely — there is
+   nothing left to disagree with the JS packer's decision. */
+.a4-col {
+  min-width: 0;
+}
+.a4-two-col .a4-col:first-child {
+  padding-right: 4mm;
+}
+.a4-two-col .a4-col:last-child {
+  padding-left: 4mm;
+  border-left: 1px solid #e5e7ee;
+}
+
+.q-block {
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+  page-break-inside: avoid;
+  margin-bottom: 3.2mm;
+  display: inline-block;
+  width: 100%;
+}
+
+.q-block.highlighted {
+  background: #fff8e1;
+  border: 1px solid #f5d67a;
+  border-radius: 4px;
+  padding: 1.6mm;
+  box-sizing: border-box;
+}
+
+/* Per-fragment wrapper (stem / option / inline-solution) used by the
+   fragment-based live pagination. Each fragment individually never
+   splits mid-render (so a KaTeX equation or image is always whole), but
+   fragments belonging to the same question are free to land in
+   different columns/pages — that's what lets a long question continue
+   naturally instead of leaving blank space behind it. */
+.q-frag {
+  break-inside: avoid;
+  -webkit-column-break-inside: avoid;
+  page-break-inside: avoid;
+  margin-bottom: 2.4mm;
+  display: inline-block;
+  width: 100%;
+}
+
+/* KaTeX sizing inside A4 pages should follow the doc font-size */
+.a4-sheet .katex {
+  font-size: 1em;
+}
+
+/* ---------------------------------------------------------------- */
+/* Question text emphasis (Layout & Style -> Question Text Style)    */
+/* ---------------------------------------------------------------- */
+.q-stem-bold,
+.q-stem-bold p {
+  font-weight: 700;
+}
+
+.q-stem-colored,
+.q-stem-colored p {
+  color: var(--accent, #3d4bfa);
+}
+
+/* ---------------------------------------------------------------- */
+/* Solution box styles (Layout & Style -> Solution Box Style)        */
+/* Each variant is a self-contained visual treatment for the inline  */
+/* "Solution:" block under a question. All four keep the same        */
+/* content/markup — only the box chrome changes.                     */
+/* ---------------------------------------------------------------- */
+.sol-box-sidebar {
+  padding-left: 1.5mm;
+  border-left: 2px solid var(--accent, #3d4bfa);
+}
+.sol-box-sidebar .sol-label {
+  color: var(--accent, #3d4bfa);
+}
+
+.sol-box-boxed {
+  padding: 1.6mm 2mm;
+  border: 1px solid var(--accent, #3d4bfa);
+  border-radius: 3px;
+  background: white;
+}
+.sol-box-boxed .sol-label {
+  color: var(--accent, #3d4bfa);
+}
+
+.sol-box-shaded {
+  padding: 1.6mm 2mm;
+  border-radius: 3px;
+  background: #eef0ff;
+}
+.sol-box-shaded .sol-label {
+  color: var(--accent, #3d4bfa);
+}
+
+.sol-box-plain {
+  padding: 0;
+}
+.sol-box-plain .sol-label {
+  color: var(--ink-700, #374151);
+}
+
+/* Markdown content defaults inside question/option/solution bodies */
+.md-body p {
+  margin: 0 0 1.6mm 0;
+}
+.md-body p:last-child {
+  margin-bottom: 0;
+}
+.md-body ul,
+.md-body ol {
+  margin: 0 0 1.6mm 4.5mm;
+  padding: 0;
+}
+.md-body ul {
+  list-style: disc outside;
+}
+.md-body ol {
+  list-style: decimal outside;
+}
+.md-body li {
+  margin-bottom: 0.8mm;
+}
+.md-body li > ul,
+.md-body li > ol {
+  margin-top: 0.8mm;
+}
+.md-body table {
+  border-collapse: collapse;
+  margin: 1.5mm 0;
+  font-size: 0.92em;
+}
+.md-body th,
+.md-body td {
+  border: 1px solid #cfd3e0;
+  padding: 1mm 1.8mm;
+}
+.md-body img {
+  max-width: 100%;
+  border-radius: 2px;
+}
+.md-body code {
+  background: #f1f2f8;
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+.md-body strong {
+  font-weight: 700;
+}
+.md-body em {
+  font-style: italic;
+}
+
+/* Headings (#, ##, ###...) — GFM/remark parses these fine already, they
+   just had zero CSS so they rendered as same-size text with huge browser
+   default margins that looked broken inside a tight A4 layout. Sized
+   relative to the surrounding text (em) so they scale with the doc's
+   base font size instead of using fixed pt values. */
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 2.2mm 0 1.2mm 0;
+}
+.md-body h1:first-child,
+.md-body h2:first-child,
+.md-body h3:first-child,
+.md-body h4:first-child,
+.md-body h5:first-child,
+.md-body h6:first-child {
+  margin-top: 0;
+}
+.md-body h1 {
+  font-size: 1.35em;
+}
+.md-body h2 {
+  font-size: 1.18em;
+}
+.md-body h3 {
+  font-size: 1.06em;
+}
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  font-size: 1em;
+}
+
+/* Divider (--- on its own line -> <hr>) */
+.md-body hr {
+  border: none;
+  border-top: 1px solid #d5d8e3;
+  margin: 2.4mm 0;
+}
+
+/* A real markdown line break (two trailing spaces, or a backslash) ->
+   remark emits a literal <br>; give it a small explicit gap instead of
+   collapsing to zero height like a bare browser default. */
+.md-body br {
+  content: '';
+  display: block;
+  margin-top: 0.6mm;
+}
+
+.md-body blockquote {
+  margin: 1.6mm 0;
+  padding-left: 2.5mm;
+  border-left: 2px solid #d5d8e3;
+  color: #5b5f6e;
+  font-style: italic;
+}
+
+/* ---------------------------------------------------------------- */
+/* PRINT STYLESHEET                                                   */
+/* This is what window.print() actually renders. It mirrors the      */
+/* on-screen .a4-sheet system exactly (same class names, same        */
+/* geometry) so live preview and PDF output stay pixel-matched.      */
+/* ---------------------------------------------------------------- */
+@media print {
+  @page {
+    size: A4;
+    margin: 0;
+  }
+
+  html,
+  body {
+    background: white !important;
+    margin: 0;
+    padding: 0;
+    height: auto !important;
+    width: auto !important;
+    overflow: visible !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  /* Neutralize every ancestor constraint (fixed viewport height, flex
+     sizing, overflow scroll, the on-screen zoom transform) between <body>
+     and #print-root so the A4 sheets can flow onto real, separate PDF
+     pages instead of being clipped/scaled into one. */
+  .app-shell {
+    height: auto !important;
+    width: auto !important;
+    overflow: visible !important;
+    display: block !important;
+  }
+
+  .preview-pane {
+    overflow: visible !important;
+    height: auto !important;
+    flex: none !important;
+    display: block !important;
+    padding: 0 !important;
+  }
+
+  .preview-scale-wrap {
+    transform: none !important;
+  }
+
+  #print-root {
+    display: block !important;
+    padding: 0 !important;
+    gap: 0 !important;
+  }
+
+  .a4-sheet {
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    margin: 0 !important;
+    page-break-after: always;
+    break-after: page;
+    width: 210mm;
+    height: 297mm;
+    /* On screen this is deliberately overflow:visible (see the base rule)
+       so a pagination mis-measurement is visibly obvious instead of
+       silently clipped. In print, the opposite is what's actually safe:
+       leaving it visible let a sheet whose content overran 297mm by even
+       a fraction of a millimetre bleed into the next sheet in the DOM —
+       and Chrome's print engine then treated that overflow as a
+       continuation of the SAME physical page rather than a clean new
+       page, which is what was eating page 2+'s top padding (the header
+       rendering flush against the physical edge on every page after the
+       first). Re-clipping here makes every .a4-sheet an unambiguous,
+       hard page boundary for the print engine again. */
+    overflow: hidden !important;
+  }
+
+  /* Belt-and-braces: some browsers still nudge print output when the
+     print dialog's own margin option isn't set to "None". Forcing the
+     padding again here (on top of the inline --a4-pad already set)
+     guarantees the header never renders flush against the physical page
+     edge even if the browser's own margin box collapses unexpectedly. */
+  .a4-sheet-inner {
+    padding: 14mm !important;
+  }
+
+  .a4-sheet:last-child {
+    page-break-after: auto;
+    break-after: auto;
+  }
+
+  .q-block,
+  .q-frag {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .sol-box-boxed,
+  .sol-box-shaded {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
+
+.print-only {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ */
+/* SLIDE PDF — a second, independent print target (components/         */
+/* SlidePrintView.tsx). Landscape, one question per page, big/centred, */
+/* teaching-slide look — completely separate from the A4 mock-test     */
+/* pipeline above. Never visible on screen; only rendered into the     */
+/* physical page when body.slide-print-active is toggled on right      */
+/* before window.print() (see TopBar's handlePrintSlides), which also  */
+/* hides #print-root for that one print call so the two print targets  */
+/* can never both end up in the same PDF.                              */
+/* ------------------------------------------------------------------ */
+.no-print-ever {
+  display: none;
+}
+
+#slide-print-root {
+  display: none;
+}
+
+body.slide-print-active #print-root {
+  display: none !important;
+}
+
+/* Even with #print-root hidden above, its ancestor row (editor panel +
+   preview-pane) still generated an empty-but-present box in the print
+   fragment tree, sitting BEFORE #slide-print-root in DOM order. Chromium's
+   named-page engine forces a page break whenever the page-name changes
+   between adjacent boxes, so that empty default-page box was silently
+   consuming a whole extra blank portrait page in front of every Slide PDF.
+   Removing the box entirely (not just its content) during a slide print
+   fixes it. */
+body.slide-print-active .app-body-row {
+  display: none !important;
+}
+
+body.slide-print-active .no-print-ever {
+  display: block;
+}
+
+body.slide-print-active #slide-print-root {
+  display: block;
+}
+
+.slide-sheet {
+  width: 297mm;
+  height: 210mm;
+  background: white;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  font-family: 'Inter', system-ui, sans-serif;
+  color: #181a24;
+}
+
+.slide-header,
+.slide-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14mm;
+  color: white;
+  font-weight: 600;
+  font-size: 12pt;
+  flex-shrink: 0;
+}
+.slide-header {
+  height: 16mm;
+}
+.slide-footer {
+  height: 12mm;
+  background: #eef0f7;
+  color: #5b5f6e;
+  font-size: 10pt;
+  font-weight: 500;
+}
+.slide-header-right,
+.slide-footer-right {
+  font-weight: 500;
+  opacity: 0.9;
+}
+
+.slide-body {
+  flex: 1;
+  padding: 10mm 16mm;
+  display: flex;
+  flex-direction: column;
+  gap: 6mm;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.slide-q-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6mm;
+}
+.slide-q-badge {
+  flex-shrink: 0;
+  width: 12mm;
+  height: 12mm;
+  border-radius: 50%;
+  color: white;
+  font-weight: 800;
+  font-size: 14pt;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.slide-q-text {
+  flex: 1;
+  font-size: 17pt;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.slide-q-text-hi {
+  font-size: 13pt;
+  font-weight: 500;
+  color: #4b4f5e;
+  margin-top: 2mm;
+}
+.slide-q-marks {
+  flex-shrink: 0;
+  font-size: 10pt;
+  font-style: italic;
+  color: #8b8fa3;
+  white-space: nowrap;
+}
+
+.slide-options-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5mm 10mm;
+}
+.slide-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 3mm;
+  padding: 4mm 5mm;
+  border: 1.5pt solid #e2e4ee;
+  border-radius: 3mm;
+  font-size: 14pt;
+}
+.slide-option-correct {
+  border-width: 2pt;
+  font-weight: 700;
+}
+.slide-option-label {
+  font-weight: 800;
+  flex-shrink: 0;
+}
+.slide-option-text-hi {
+  font-size: 11.5pt;
+  color: #5b5f6e;
+  margin-top: 1mm;
+}
+
+.slide-explanation {
+  font-size: 12.5pt;
+  line-height: 1.4;
+  background: #f7f8fc;
+  border-radius: 3mm;
+  padding: 4mm 6mm;
+  border-left: 3pt solid #d5d8e3;
+}
+.slide-explanation-label {
+  font-weight: 800;
+}
+
+.slide-answer-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 4mm 6mm;
+  align-content: start;
+}
+.slide-answer-cell {
+  display: flex;
+  align-items: baseline;
+  gap: 2mm;
+  font-size: 13pt;
+  border-bottom: 0.75pt solid #eceef5;
+  padding-bottom: 2mm;
+}
+.slide-answer-num {
+  color: #8b8fa3;
+  font-weight: 500;
+}
+.slide-answer-letter {
+  font-weight: 800;
+}
+
+.slide-title-sheet {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: white;
+}
+.slide-title-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4mm;
+  padding: 0 20mm;
+}
+.slide-title-logo {
+  width: 24mm;
+  height: 24mm;
+  object-fit: contain;
+  margin-bottom: 2mm;
+}
+.slide-title-institute {
+  font-size: 18pt;
+  font-weight: 800;
+}
+.slide-title-tagline {
+  font-size: 12pt;
+  font-style: italic;
+  opacity: 0.9;
+}
+.slide-title-testname {
+  font-size: 28pt;
+  font-weight: 800;
+  margin-top: 8mm;
+  max-width: 220mm;
+}
+.slide-title-meta {
+  font-size: 13pt;
+  opacity: 0.95;
+}
+.slide-title-subtitle {
+  font-size: 11pt;
+  opacity: 0.85;
+  margin-top: 4mm;
+}
+
+@media print {
+  body.slide-print-active {
+    background: white !important;
+  }
+
+  body.slide-print-active #slide-print-root {
+    display: block !important;
+  }
+
+  .slide-sheet {
+    width: 297mm;
+    height: 210mm;
+    margin: 0 !important;
+    box-shadow: none !important;
+    page-break-after: always;
+    break-after: page;
+    /* CSS @page at-rules are NOT scoped by ancestor selectors or body
+       classes the way normal rules are — a bare `@page` here would set
+       the page-box size for the ENTIRE print job, including the
+       must-never-break mock-test pipeline above, regardless of whether
+       body.slide-print-active is set. That is exactly what happened
+       before this fix: this landscape @page rule silently won (later
+       source order) over the portrait @page rule at the top of this
+       file for EVERY print, including normal Print/Save PDF, cutting
+       content and adding blank space. The `page:` property below
+       assigns ONLY elements with this class to a named page box
+       (declared further down as `@page slide`), so the default/unnamed
+       @page rule the mock-test pipeline relies on stays A4 portrait,
+       completely unaffected. */
+    page: slide;
+  }
+  .slide-sheet:last-child {
+    page-break-after: auto;
+    break-after: auto;
+  }
+
+  /* Named page: applies ONLY to elements with `page: slide` (i.e.
+     .slide-sheet above), never globally. The default @page rule at the
+     top of this file (A4 portrait) is untouched and still governs the
+     normal mock-test Print/Save PDF pipeline. */
+  @page slide {
+    size: A4 landscape;
+    margin: 0;
+  }
+}
