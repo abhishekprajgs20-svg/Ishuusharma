@@ -205,6 +205,32 @@ export function parseBulkQuestions(raw: string): Partial<Question>[] {
         }
       }
     }
+    let splitIndex = textLines.findIndex(l => l === '😂');
+    if (splitIndex !== -1) {
+      const optionLines = textLines.slice(splitIndex + 1);
+      textLines.splice(splitIndex);
+      for (const opt of optionLines) {
+        const checkMatch = opt.match(/^(.*?)\s*[✅✔✓]\s*$/);
+        parsed.options.push({
+          id: genId(),
+          text: (checkMatch ? checkMatch[1] : opt).trim(),
+          isCorrect: !!checkMatch,
+        });
+      }
+    } else if (parsed.options.length === 0 && textLines.length >= 4) {
+      const last4 = textLines.slice(-4);
+      if (last4.some(l => /[✅✔✓]/.test(l))) {
+        textLines.splice(-4, 4);
+        for (const opt of last4) {
+          const checkMatch = opt.match(/^(.*?)\s*[✅✔✓]\s*$/);
+          parsed.options.push({
+            id: genId(),
+            text: (checkMatch ? checkMatch[1] : opt).trim(),
+            isCorrect: !!checkMatch,
+          });
+        }
+      }
+    }
 
     parsed.text = textLines.join('\n').trim();
     parsed.explanation = explanationLines.join('\n').trim() || undefined;
